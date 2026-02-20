@@ -1,4 +1,4 @@
-# Advanced Inventory Assistant
+# Advanced Inventory Assistant (Prototype)
 
 A conversational inventory assistant powered by **Ollama** and local LLM tool-calling. Query product catalog, stock levels, locations, transaction history, and inventory value using natural language. Data is stored in local JSON files—no database required.
 
