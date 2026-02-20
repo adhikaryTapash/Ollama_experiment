@@ -105,7 +105,7 @@ def run():
         ]
 
         response = ollama.chat(model='functiongemma', messages=messages, tools=tools)
-        print(f"response: {response.message}")
+        #print(f"response: {response.message}")
         if response.message.tool_calls:
             for tool in response.message.tool_calls:
                 name = tool.function.name
