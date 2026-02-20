@@ -1,0 +1,1 @@
+[{"id":"T-1001","product_id":"PROD-001","type":"OUT","qty":2,"date":"2023-10-27T09:00:00Z"},{"id":"T-1002","product_id":"PROD-003","type":"IN","qty":10,"date":"2023-10-27T10:15:00Z"},{"id":"T-1003","product_id":"PROD-006","type":"OUT","qty":1,"date":"2023-10-27T14:30:00Z"},{"id":"T-1004","product_id":"PROD-009","type":"OUT","qty":5,"date":"2023-10-28T11:00:00Z"}]
