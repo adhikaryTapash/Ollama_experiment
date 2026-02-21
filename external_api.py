@@ -74,6 +74,116 @@ def load_api_source_and_operations(database_url, source_name=None, source_id=Non
         conn.close()
 
 
+def resolve_operation_with_openai(user_message, operations_list, api_key):
+    """
+    Ask OpenAI which API operation to call and with what parameters.
+    Returns dict with operation_id, path_params, query_params, request_body, or None on failure.
+    Works with any third-party API; no hardcoded operation names.
+    """
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+    if not api_key or not operations_list:
+        return None
+
+    # Compact list for the prompt (operation_id, method, path, summary)
+    ops_text = "\n".join(
+        f"- {op['operation_id']}: {op['method']} {op['path_template']} — {op['summary'][:100]}"
+        for op in operations_list[:150]
+    )
+    if len(operations_list) > 150:
+        ops_text += f"\n... and {len(operations_list) - 150} more operations."
+
+    system = (
+        "You choose which API operation to call based on the user's request. "
+        "Reply with a single JSON object only, no other text. Use this exact shape:\n"
+        '{"operation_id": "<operationId from the list>", "path_params": {} or {"paramName": "value"}, '
+        '"query_params": {} or {"key": "value"}, "request_body": null or {...}}\n'
+        "path_params: fill path placeholders (e.g. airportId, id). query_params: for GET query string. "
+        "request_body: only for POST/PUT/PATCH; null for GET/DELETE. Use empty objects {} where nothing is needed."
+    )
+    user = f"Available operations:\n{ops_text}\n\nUser request: {user_message}\n\nRespond with JSON only:"
+
+    try:
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        # Extract JSON (in case of markdown code block)
+        if "```" in text:
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
+        data = json.loads(text)
+        operation_id = data.get("operation_id")
+        if not operation_id:
+            return None
+        return {
+            "operation_id": operation_id,
+            "path_params": data.get("path_params") or {},
+            "query_params": data.get("query_params") or {},
+            "request_body": data.get("request_body"),
+        }
+    except Exception:
+        return None
+
+
+def resolve_operation_with_ollama(user_message, operations_list, model="functiongemma"):
+    """
+    Ask Ollama (e.g. functiongemma) which API operation to call and with what parameters.
+    No API key needed. Returns dict with operation_id, path_params, query_params, request_body, or None on failure.
+    """
+    try:
+        import ollama
+    except ImportError:
+        return None
+    if not operations_list:
+        return None
+
+    ops_text = "\n".join(
+        f"- {op['operation_id']}: {op['method']} {op['path_template']} — {op['summary'][:100]}"
+        for op in operations_list[:150]
+    )
+    if len(operations_list) > 150:
+        ops_text += f"\n... and {len(operations_list) - 150} more operations."
+
+    system = (
+        "You choose which API operation to call based on the user's request. "
+        "Reply with a single JSON object only, no other text. Use this exact shape:\n"
+        '{"operation_id": "<operationId from the list>", "path_params": {} or {"paramName": "value"}, '
+        '"query_params": {} or {"key": "value"}, "request_body": null or {...}}\n'
+        "path_params: fill path placeholders (e.g. airportId, id). query_params: for GET query string. "
+        "request_body: only for POST/PUT/PATCH; null for GET/DELETE. Use empty objects {} where nothing is needed."
+    )
+    user = f"Available operations:\n{ops_text}\n\nUser request: {user_message}\n\nRespond with JSON only:"
+
+    try:
+        resp = ollama.chat(model=model, messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
+        text = (resp.message.content or "").strip()
+        if "```" in text:
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
+        data = json.loads(text)
+        operation_id = data.get("operation_id")
+        if not operation_id:
+            return None
+        return {
+            "operation_id": operation_id,
+            "path_params": data.get("path_params") or {},
+            "query_params": data.get("query_params") or {},
+            "request_body": data.get("request_body"),
+        }
+    except Exception:
+        return None
+
+
 def build_external_api_tool(operations_list):
     """
     Build the single generic tool definition for Ollama, with operation list in the description.
