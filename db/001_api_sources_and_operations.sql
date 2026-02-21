@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS api_operations (
     tag                     VARCHAR(255),
     parameters_schema       JSONB,
     request_body_schema_ref  VARCHAR(255),
+    -- Tool selection: so the app can pick the right op for "list of airports" vs "hotel by id"
+    has_path_params         BOOLEAN NOT NULL DEFAULT true,
+    resource                VARCHAR(64),
+    action                  VARCHAR(32),
     UNIQUE(api_source_id, operation_id)
 );
 

@@ -91,16 +91,17 @@ def find_products_by_brand(brand_name):
 
 EXTERNAL_API_KEYWORDS = ("airport", "passenger", "hotel", "flytel", "flight", "dashboard", "settings")
 
-# Map query keyword -> substrings to match in operation_id or summary (so we pass only relevant tools)
+# Map query keyword -> (substrings for fallback match, preferred resource from DB)
 _EXTERNAL_API_KEYWORD_TO_MATCH = {
-    "airport": ("airport", "airports"),
-    "passenger": ("passenger", "passengers"),
-    "hotel": ("hotel", "hotels"),
-    "flytel": ("flytel",),
-    "flight": ("flight", "flights"),
-    "dashboard": ("dashboard",),
-    "settings": ("settings",),
+    "airport": (("airport", "airports"), "airports"),
+    "passenger": (("passenger", "passengers"), "passengers"),
+    "hotel": (("hotel", "hotels"), "hotels"),
+    "flytel": (("flytel",), None),
+    "flight": (("flight", "flights"), None),
+    "dashboard": (("dashboard",), None),
+    "settings": (("settings",), None),
 }
+_LIST_INTENT_PHRASES = ("list", "get me the list", "show all", "all the", "list of")
 
 
 def _external_api_is_request(user_input, external_api_data):
@@ -113,26 +114,51 @@ def _external_api_is_request(user_input, external_api_data):
 
 def _filter_external_tools_by_query(tools, user_input, operations_by_id):
     """
-    When the user asks about airports/hotels/passengers etc., return only tools whose
-    operation_id or summary matches those keywords so the model picks the right one
-    (e.g. Settings_GetAirports for 'list of airports', not Settings_GetProducts).
+    Return only tools that match the user intent. Uses DB columns resource + action when
+    present so "list of airports" -> resource=airports, action=list (e.g. Settings_GetAirports).
+    Falls back to keyword match on operation_id/summary when resource/action are missing.
     """
     if not user_input or not operations_by_id:
         return tools
     user_lower = user_input.lower()
+    want_list = any(p in user_lower for p in _LIST_INTENT_PHRASES)
+    wanted_resources = set()
     match_substrings = []
-    for kw, subs in _EXTERNAL_API_KEYWORD_TO_MATCH.items():
+    for kw, val in _EXTERNAL_API_KEYWORD_TO_MATCH.items():
         if kw in user_lower:
+            subs, resource = val
             match_substrings.extend(subs)
-    if not match_substrings:
+            if resource:
+                wanted_resources.add(resource)
+    if not match_substrings and not wanted_resources:
         return tools
     filtered = []
     for t in tools:
         name = t.get("function", {}).get("name") or ""
         op = operations_by_id.get(name) or {}
-        summary = (op.get("summary") or "").lower()
-        combined = f"{name} {summary}"
-        if any(sub in combined for sub in match_substrings):
+        resource = (op.get("resource") or "").strip().lower() if op.get("resource") else None
+        action = (op.get("action") or "").strip().lower() if op.get("action") else None
+        has_path_params = op.get("has_path_params", "{" in (op.get("path_template") or ""))
+
+        if wanted_resources:
+            if resource and resource in wanted_resources:
+                pass
+            elif not resource:
+                summary = (op.get("summary") or "").lower()
+                if not any(sub in f"{name} {summary}" for sub in match_substrings):
+                    continue
+            else:
+                continue
+        else:
+            summary = (op.get("summary") or "").lower()
+            if not any(sub in f"{name} {summary}" for sub in match_substrings):
+                continue
+
+        if want_list:
+            # list = no path params; list_scoped = GET .../resource (e.g. passengers at airport)
+            if action in ("list", "list_scoped") or (not has_path_params):
+                filtered.append(t)
+        else:
             filtered.append(t)
     return filtered if filtered else tools
 
@@ -243,8 +269,11 @@ def run():
     if external_api_data:
         system_instruction = (
             "CRITICAL: Use the API tool whose name matches the request: list of airports -> Settings_GetAirports; "
-            "passengers -> Airports_GetPassengers or similar; hotels -> Settings_GetHotels. "
+            "list of hotels -> Settings_GetHotels; passengers -> Airports_GetPassengers or similar. "
             "Do NOT use Settings_GetProducts or inventory tools for airports/hotels/passengers. "
+            "You can chain API calls: first call Settings_GetAirports to get airport IDs, then use the airport id (UUID) in later calls. "
+            "When a user refers to an airport by name (e.g. 'Oslo Gardermoen'), look up its id in the previous tool result and pass that id (e.g. airportId), never the name. "
+            "If a tool returns 'Missing required path parameters', call the suggested list endpoint first and use the returned IDs in the next call. "
             "For products, stock, inventory, brand -> use inventory tools. If a tool errors, explain to the user."
         )
     else:
@@ -255,8 +284,11 @@ def run():
         )
 
     def _handle_tool_response(response, messages, tools, use_tools, external_api_data, user_input=""):
-        if response.message.tool_calls:
-            user_lower = (user_input or "").lower()
+        while True:
+            if not response.message.tool_calls:
+                _log(f"Assistant: {response.message.content}")
+                break
+            messages.append(response.message)
             for i, tool in enumerate(response.message.tool_calls):
                 name = getattr(tool.function, "name", None) or (use_tools[i]["function"]["name"] if i < len(use_tools) else None) or "unknown"
                 args = tool.function.arguments
@@ -300,27 +332,22 @@ def run():
                     else:
                         result = f"Unknown tool: {name}"
 
-                messages.append(response.message)
                 messages.append({'role': 'tool', 'content': result})
 
             _log("  ... getting answer ...")
-            final = ollama.chat(model='functiongemma', messages=messages)
-            _log(f"Assistant: {final.message.content}")
-        else:
-            _log(f"Assistant: {response.message.content}")
+            response = ollama.chat(model='functiongemma', messages=messages)
 
+    # Keep conversation history so the model can use previous tool results (e.g. airport ID from list of airports)
+    conversation_messages = []
     while True:
         user_input = input("\nYou: ")
         if user_input.lower() in ['exit', 'quit']: break
 
         _log("  ... thinking ...")
-        messages = [
-            {'role': 'system', 'content': system_instruction},
-            {'role': 'user', 'content': user_input}
-        ]
+        conversation_messages.append({'role': 'user', 'content': user_input})
+        messages = [{'role': 'system', 'content': system_instruction}] + conversation_messages
 
         is_external_api_request = _external_api_is_request(user_input, external_api_data)
-        # When user asks about airports/hotels/etc., pass only matching API tools so the model picks the right one
         op_ids = (external_api_data or {}).get("operations_by_id") or {}
         if is_external_api_request and external_api_data:
             external_only = [t for t in tools if t.get("function", {}).get("name") in op_ids]
@@ -329,6 +356,8 @@ def run():
             use_tools = tools
         response = ollama.chat(model='functiongemma', messages=messages, tools=use_tools)
         _handle_tool_response(response, messages, tools, use_tools, external_api_data, user_input)
+        # Persist this turn (user + assistant/tool messages) so next turn has full context
+        conversation_messages = messages[1:]
 
 if __name__ == "__main__":
     run()

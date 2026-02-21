@@ -5,6 +5,7 @@ and execute requests. App reads only; no Swagger parsing here.
 
 import json
 import os
+import re
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlencode
@@ -48,18 +49,31 @@ def load_api_source_and_operations(database_url, source_name=None, source_id=Non
                 return None, None
             api_source_id, base_url = row
 
-            cur.execute(
-                """
-                SELECT operation_id, method, path_template, summary, tag, parameters_schema
-                FROM api_operations
-                WHERE api_source_id = %s
-                ORDER BY tag, operation_id
-                """,
-                (api_source_id,),
-            )
+            try:
+                cur.execute(
+                    """
+                    SELECT operation_id, method, path_template, summary, tag, parameters_schema,
+                           COALESCE(has_path_params, true), resource, action
+                    FROM api_operations
+                    WHERE api_source_id = %s
+                    ORDER BY tag, operation_id
+                    """,
+                    (api_source_id,),
+                )
+            except psycopg2.ProgrammingError:
+                cur.execute(
+                    """
+                    SELECT operation_id, method, path_template, summary, tag, parameters_schema
+                    FROM api_operations
+                    WHERE api_source_id = %s
+                    ORDER BY tag, operation_id
+                    """,
+                    (api_source_id,),
+                )
             rows = cur.fetchall()
-            operations = [
-                {
+            operations = []
+            for r in rows:
+                op = {
                     "operation_id": r[0],
                     "method": r[1],
                     "path_template": r[2],
@@ -67,8 +81,15 @@ def load_api_source_and_operations(database_url, source_name=None, source_id=Non
                     "tag": r[4],
                     "parameters_schema": r[5],
                 }
-                for r in rows
-            ]
+                if len(r) > 6:
+                    op["has_path_params"] = r[6]
+                    op["resource"] = r[7] if len(r) > 7 else None
+                    op["action"] = r[8] if len(r) > 8 else None
+                else:
+                    op["has_path_params"] = "{" in (op.get("path_template") or "")
+                    op["resource"] = None
+                    op["action"] = None
+                operations.append(op)
         return base_url.rstrip("/"), operations
     finally:
         conn.close()
@@ -319,7 +340,20 @@ def execute_external_api(base_url, bearer_token, operations_by_id, operation_id,
         except json.JSONDecodeError:
             request_body = None
 
-    url = _build_url(base_url, op["path_template"], path_params, query_params)
+    path = _fill_path_template(op["path_template"], path_params)
+    missing = re.findall(r"\{(\w+)\}", path)
+    if missing:
+        return (
+            f"Missing required path parameters: {', '.join(missing)}. "
+            "Call a list endpoint first (e.g. Settings_GetAirports, Settings_GetHotels) to get IDs, "
+            "then call this operation again with those IDs in the arguments."
+        )
+
+    url = base_url + path
+    if query_params and isinstance(query_params, dict):
+        filtered = {k: v for k, v in query_params.items() if v is not None and v != ""}
+        if filtered:
+            url += "?" + urlencode(filtered)
     method = op["method"].upper()
 
     headers = {"Accept": "application/json"}

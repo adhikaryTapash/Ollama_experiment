@@ -27,21 +27,27 @@ def main():
         print("Set DATABASE_URL in .env or environment.", file=sys.stderr)
         sys.exit(1)
 
-    ddl_path = Path(__file__).resolve().parent.parent / "db" / "001_api_sources_and_operations.sql"
-    if not ddl_path.exists():
-        print(f"DDL file not found: {ddl_path}", file=sys.stderr)
-        sys.exit(1)
-
-    sql = ddl_path.read_text(encoding="utf-8")
+    db_dir = Path(__file__).resolve().parent.parent / "db"
+    ddl_files = [
+        db_dir / "001_api_sources_and_operations.sql",
+        db_dir / "002_add_tool_selection_columns.sql",
+    ]
+    for ddl_path in ddl_files:
+        if not ddl_path.exists():
+            print(f"DDL file not found: {ddl_path}", file=sys.stderr)
+            sys.exit(1)
 
     print("Connecting and running DDL ...")
     try:
         conn = psycopg2.connect(database_url)
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute(sql)
+            for ddl_path in ddl_files:
+                sql = ddl_path.read_text(encoding="utf-8")
+                cur.execute(sql)
+                print(f"  Ran {ddl_path.name}")
         conn.close()
-        print("Done. Tables api_sources and api_operations are ready.")
+        print("Done. Tables api_sources and api_operations are ready (with tool selection columns).")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

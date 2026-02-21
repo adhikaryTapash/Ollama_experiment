@@ -54,8 +54,48 @@ def get_base_url(doc, fallback_url, swagger_url=None):
     return ""
 
 
+def _derive_tool_selection(path_template, method, operation_id):
+    """
+    Return (has_path_params, resource, action) for tool selection.
+    - has_path_params: True if path contains {param}.
+    - resource: Main entity from path (last segment that is not a param), e.g. airports, hotels, passengers.
+    - action: list | get_by_id | create | update | delete | other.
+    """
+    path = (path_template or "").strip()
+    has_path_params = "{" in path
+    # Resource: last path segment that is not a placeholder, lowercased
+    segments = [s for s in path.split("/") if s and "{" not in s]
+    resource = segments[-1].lower() if segments else None
+    # Normalize common names
+    if resource == "airport":
+        resource = "airports"
+    elif resource == "hotel":
+        resource = "hotels"
+    elif resource == "passenger":
+        resource = "passengers"
+    elif resource == "pricelist":
+        resource = "pricelists"
+    # Action: GET with no path params = list; GET with path ending in /resource (e.g. .../passengers) = list_scoped (returns list)
+    method = (method or "get").upper()
+    if method == "GET":
+        if not has_path_params:
+            action = "list"
+        else:
+            # e.g. /api/airports/{airportId}/passengers returns list of passengers -> list_scoped
+            action = "list_scoped" if resource and path.rstrip("/").endswith("/" + resource) else "get_by_id"
+    elif method == "POST":
+        action = "create"
+    elif method in ("PUT", "PATCH"):
+        action = "update"
+    elif method == "DELETE":
+        action = "delete"
+    else:
+        action = "other"
+    return has_path_params, resource, action
+
+
 def parse_operations(doc):
-    """Yield (method, path_template, operation_id, summary, tag, parameters_schema, request_body_ref)."""
+    """Yield (method, path_template, operation_id, summary, tag, parameters_schema, request_body_ref, has_path_params, resource, action)."""
     paths = doc.get("paths") or {}
     for path_template, path_item in paths.items():
         if not isinstance(path_item, dict):
@@ -93,6 +133,7 @@ def parse_operations(doc):
                         else:
                             request_body_schema_ref = "(has body)"
                         break
+            has_path_params, resource, action = _derive_tool_selection(path_template, method, operation_id)
             yield (
                 method.upper(),
                 path_template,
@@ -101,6 +142,9 @@ def parse_operations(doc):
                 tag,
                 parameters_schema,
                 request_body_schema_ref,
+                has_path_params,
+                resource,
+                action,
             )
 
 
@@ -162,13 +206,16 @@ def run():
                 tag,
                 parameters_schema,
                 request_body_schema_ref,
+                has_path_params,
+                resource,
+                action,
             ) in parse_operations(doc):
                 cur.execute(
                     """
                     INSERT INTO api_operations
                     (api_source_id, operation_id, method, path_template, summary, tag,
-                     parameters_schema, request_body_schema_ref)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                     parameters_schema, request_body_schema_ref, has_path_params, resource, action)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         api_source_id,
@@ -179,6 +226,9 @@ def run():
                         tag,
                         Json(parameters_schema) if parameters_schema else None,
                         request_body_schema_ref,
+                        has_path_params,
+                        resource,
+                        action,
                     ),
                 )
                 count += 1
