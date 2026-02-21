@@ -1,0 +1,23 @@
+# Requirements template – add new packages to requirements.txt (project root)
+# Copy the format below. Lines starting with # are comments and ignored by pip.
+# After editing requirements.txt, run: pip install -r requirements.txt
+
+# --- Format options ---
+# Exact version:
+# package==1.2.3
+
+# Minimum version (recommended for compatibility):
+# package>=1.2.0
+
+# Version range:
+# package>=1.2.0,<2.0.0
+
+# From Git (optional):
+# git+https://github.com/user/repo.git@branch-or-tag
+
+# --- Current / example entries (customize as needed) ---
+ollama>=0.6.1
+
+# Add new requirements below, one per line:
+# requests>=2.28.0
+# python-dotenv>=1.0.0
