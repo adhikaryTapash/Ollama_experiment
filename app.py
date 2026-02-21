@@ -91,6 +91,17 @@ def find_products_by_brand(brand_name):
 
 EXTERNAL_API_KEYWORDS = ("airport", "passenger", "hotel", "flytel", "flight", "dashboard", "settings")
 
+# Map query keyword -> substrings to match in operation_id or summary (so we pass only relevant tools)
+_EXTERNAL_API_KEYWORD_TO_MATCH = {
+    "airport": ("airport", "airports"),
+    "passenger": ("passenger", "passengers"),
+    "hotel": ("hotel", "hotels"),
+    "flytel": ("flytel",),
+    "flight": ("flight", "flights"),
+    "dashboard": ("dashboard",),
+    "settings": ("settings",),
+}
+
 
 def _external_api_is_request(user_input, external_api_data):
     """True if user message looks like an external API request (keywords + API loaded)."""
@@ -100,20 +111,30 @@ def _external_api_is_request(user_input, external_api_data):
     return any(kw in user_lower for kw in EXTERNAL_API_KEYWORDS)
 
 
-def _external_api_static_fallback(args, user_input):
+def _filter_external_tools_by_query(tools, user_input, operations_by_id):
     """
-    When EXECUTION_METHOD=static and model left operation_id empty, set it from keywords (Flytel-specific).
-    Modifies args in place; returns args.
+    When the user asks about airports/hotels/passengers etc., return only tools whose
+    operation_id or summary matches those keywords so the model picks the right one
+    (e.g. Settings_GetAirports for 'list of airports', not Settings_GetProducts).
     """
-    user_lower = (user_input or "").lower()
-    if not args.get("operation_id"):
-        if any(kw in user_lower for kw in ("airport", "airports")):
-            args["operation_id"] = "Settings_GetAirports"
-        elif any(kw in user_lower for kw in ("passenger", "passengers")):
-            args["operation_id"] = "Airports_GetPassengers"
-        elif any(kw in user_lower for kw in ("hotel", "hotels")):
-            args["operation_id"] = "Settings_GetHotels"
-    return args
+    if not user_input or not operations_by_id:
+        return tools
+    user_lower = user_input.lower()
+    match_substrings = []
+    for kw, subs in _EXTERNAL_API_KEYWORD_TO_MATCH.items():
+        if kw in user_lower:
+            match_substrings.extend(subs)
+    if not match_substrings:
+        return tools
+    filtered = []
+    for t in tools:
+        name = t.get("function", {}).get("name") or ""
+        op = operations_by_id.get(name) or {}
+        summary = (op.get("summary") or "").lower()
+        combined = f"{name} {summary}"
+        if any(sub in combined for sub in match_substrings):
+            filtered.append(t)
+    return filtered if filtered else tools
 
 
 def _external_api_execute(external_api_data, operation_id, path_params=None, query_params=None, request_body=None):
@@ -130,79 +151,38 @@ def _external_api_execute(external_api_data, operation_id, path_params=None, que
     )
 
 
-def _external_api_handle_call(name, args, external_api_data, execution_method, user_input):
+def _external_api_handle_call(name, args, external_api_data):
     """
-    Single handler for call_external_api: apply static fallback when EXECUTION_METHOD=static, then execute.
-    Returns result string if this was a call_external_api call, None otherwise (caller handles other tools).
+    If tool name is an external operation_id, execute that API call and return result.
+    Returns result string for external ops, None so caller runs inventory tools.
     """
-    if name != "call_external_api" or not external_api_data:
+    if not external_api_data:
         return None
-    if execution_method == "static":
-        _external_api_static_fallback(args, user_input)
+    operations_by_id = external_api_data.get("operations_by_id") or {}
+    op = operations_by_id.get(name)
+    if not op:
+        return None
+    from external_api import args_to_request_parts
+    path_params, query_params, request_body = args_to_request_parts(op, args)
     return _external_api_execute(
         external_api_data,
-        args.get("operation_id", ""),
-        args.get("path_params"),
-        args.get("query_params"),
-        args.get("request_body"),
+        name,
+        path_params,
+        query_params,
+        request_body,
     )
-
-
-def _external_api_handle_resolved_flow(user_input, external_api_data, messages, resolved):
-    """Execute API with resolved operation and append assistant + tool messages. Returns True."""
-    if not resolved:
-        return False
-    _log(f"  ... calling API: {resolved['operation_id']} ...")
-    result = _external_api_execute(
-        external_api_data,
-        resolved["operation_id"],
-        resolved.get("path_params"),
-        resolved.get("query_params"),
-        resolved.get("request_body"),
-    )
-    messages.append({
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [{"function": {"name": "call_external_api", "arguments": json.dumps(resolved)}}],
-    })
-    messages.append({"role": "tool", "content": result})
-    return True
-
-
-def _external_api_handle_openai_flow(user_input, external_api_data, openai_key, messages):
-    """Use OpenAI to resolve operation, then execute and append. Returns True on success."""
-    from external_api import resolve_operation_with_openai
-    _log("  ... asking OpenAI which operation to call ...")
-    resolved = resolve_operation_with_openai(
-        user_input,
-        list(external_api_data["operations_by_id"].values()),
-        openai_key,
-    )
-    return _external_api_handle_resolved_flow(user_input, external_api_data, messages, resolved)
-
-
-def _external_api_handle_ollama_flow(user_input, external_api_data, messages, model="functiongemma"):
-    """Use Ollama (no API key) to resolve operation, then execute and append. Returns True on success."""
-    from external_api import resolve_operation_with_ollama
-    _log("  ... asking Ollama which operation to call ...")
-    resolved = resolve_operation_with_ollama(
-        user_input,
-        list(external_api_data["operations_by_id"].values()),
-        model=model,
-    )
-    return _external_api_handle_resolved_flow(user_input, external_api_data, messages, resolved)
 
 
 def _load_external_api_tool():
     """
     If config is set, load API source and operations from Postgres and return
     (tools_list_append, handler_data) or ([], None).
-    handler_data: dict with base_url, bearer_token, operations_by_id for call_external_api.
+    handler_data: dict with base_url, bearer_token, operations_by_id for dynamic API tools.
     """
     try:
         from external_api import (
             load_api_source_and_operations,
-            build_external_api_tool,
+            build_dynamic_tools_from_operations,
         )
     except ImportError:
         return [], None
@@ -228,14 +208,14 @@ def _load_external_api_tool():
     if not base_url or not operations_list:
         return [], None
 
-    tool_def = build_external_api_tool(operations_list)
+    dynamic_tools = build_dynamic_tools_from_operations(operations_list)
     operations_by_id = {op["operation_id"]: op for op in operations_list}
     handler_data = {
         "base_url": base_url,
         "bearer_token": bearer_token,
         "operations_by_id": operations_by_id,
     }
-    return [tool_def], handler_data
+    return dynamic_tools, handler_data
 
 
 # --- MAIN RUN LOOP ---
@@ -249,9 +229,9 @@ def run():
         {'type': 'function', 'function': {'name': 'find_products_by_brand', 'description': 'Search for all products by a brand name', 'parameters': {'type': 'object', 'properties': {'brand_name': {'type': 'string'}}, 'required': ['brand_name']}}}
     ]
 
-    external_tools, external_api_data = _load_external_api_tool()
-    # Put external API tool first so the model prefers it for airport/hotel/passenger questions
-    tools = (external_tools + inventory_tools) if external_api_data else inventory_tools
+    dynamic_external_tools, external_api_data = _load_external_api_tool()
+    # Combined list: static inventory tools + dynamic tools (one per DB operation)
+    tools = inventory_tools + (dynamic_external_tools if external_api_data else [])
     if external_api_data:
         _log("--- External API tool loaded (from Postgres). ---")
     else:
@@ -262,7 +242,9 @@ def run():
 
     if external_api_data:
         system_instruction = (
-            "CRITICAL: For airports, passengers, hotels, flights, Flytel -> use call_external_api (e.g. Settings_GetAirports for airports). "
+            "CRITICAL: Use the API tool whose name matches the request: list of airports -> Settings_GetAirports; "
+            "passengers -> Airports_GetPassengers or similar; hotels -> Settings_GetHotels. "
+            "Do NOT use Settings_GetProducts or inventory tools for airports/hotels/passengers. "
             "For products, stock, inventory, brand -> use inventory tools. If a tool errors, explain to the user."
         )
     else:
@@ -272,7 +254,7 @@ def run():
             "If a tool returns an error, explain it to the user."
         )
 
-    def _handle_tool_response(response, messages, tools, use_tools, external_api_data, user_input="", execution_method="static"):
+    def _handle_tool_response(response, messages, tools, use_tools, external_api_data, user_input=""):
         if response.message.tool_calls:
             user_lower = (user_input or "").lower()
             for i, tool in enumerate(response.message.tool_calls):
@@ -286,12 +268,24 @@ def run():
                 if not isinstance(args, dict):
                     args = {}
 
-                if name == 'call_external_api':
-                    _log(f"  ... calling API: {args.get('operation_id', '?')} ...")
+                if external_api_data and name in (external_api_data.get("operations_by_id") or {}):
+                    op = external_api_data["operations_by_id"][name]
+                    from external_api import args_to_request_parts, _fill_path_template
+                    from urllib.parse import urlencode
+                    path_params, query_params, _ = args_to_request_parts(op, args)
+                    base = (external_api_data.get("base_url") or "").rstrip("/")
+                    path_tpl = (op.get("path_template") or "").strip()
+                    path = _fill_path_template(path_tpl, path_params)
+                    full_route = f"{base}{path}" if path.startswith("/") else f"{base}/{path}"
+                    if query_params and isinstance(query_params, dict):
+                        q = {k: v for k, v in query_params.items() if v is not None and v != ""}
+                        if q:
+                            full_route += "?" + urlencode(q)
+                    _log(f"  ... calling API: {name} — {op.get('method', 'GET')} {full_route} ...")
                 else:
                     _log(f"  ... using tool: {name} ...")
 
-                result = _external_api_handle_call(name, args, external_api_data, execution_method, user_input)
+                result = _external_api_handle_call(name, args, external_api_data)
                 if result is None:
                     if name == 'check_inventory':
                         result = check_inventory(args.get('product_name', ''))
@@ -326,35 +320,15 @@ def run():
         ]
 
         is_external_api_request = _external_api_is_request(user_input, external_api_data)
-        execution_method = os.environ.get("EXECUTION_METHOD", "static").strip().lower()
-        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        # If openai requested but no key, use ollama so "no API key" users get operation selection
-        if execution_method == "openai" and not openai_key:
-            execution_method = "ollama"
-        if is_external_api_request and execution_method == "openai" and openai_key:
-            if _external_api_handle_openai_flow(user_input, external_api_data, openai_key, messages):
-                _log("  ... getting answer ...")
-                final = ollama.chat(model='functiongemma', messages=messages)
-                _log(f"Assistant: {final.message.content}")
-            else:
-                _log("  ... OpenAI could not pick an operation; trying Ollama ...")
-                use_tools = [t for t in tools if t.get("function", {}).get("name") == "call_external_api"]
-                response = ollama.chat(model='functiongemma', messages=messages, tools=use_tools)
-                _handle_tool_response(response, messages, tools, use_tools, external_api_data, user_input, execution_method)
-        elif is_external_api_request and execution_method == "ollama":
-            if _external_api_handle_ollama_flow(user_input, external_api_data, messages):
-                _log("  ... getting answer ...")
-                final = ollama.chat(model='functiongemma', messages=messages)
-                _log(f"Assistant: {final.message.content}")
-            else:
-                _log("  ... Ollama could not pick an operation; trying with single tool ...")
-                use_tools = [t for t in tools if t.get("function", {}).get("name") == "call_external_api"]
-                response = ollama.chat(model='functiongemma', messages=messages, tools=use_tools)
-                _handle_tool_response(response, messages, tools, use_tools, external_api_data, user_input, execution_method)
+        # When user asks about airports/hotels/etc., pass only matching API tools so the model picks the right one
+        op_ids = (external_api_data or {}).get("operations_by_id") or {}
+        if is_external_api_request and external_api_data:
+            external_only = [t for t in tools if t.get("function", {}).get("name") in op_ids]
+            use_tools = _filter_external_tools_by_query(external_only, user_input, op_ids)
         else:
-            use_tools = [t for t in tools if t.get("function", {}).get("name") == "call_external_api"] if is_external_api_request else tools
-            response = ollama.chat(model='functiongemma', messages=messages, tools=use_tools)
-            _handle_tool_response(response, messages, tools, use_tools, external_api_data, user_input, execution_method)
+            use_tools = tools
+        response = ollama.chat(model='functiongemma', messages=messages, tools=use_tools)
+        _handle_tool_response(response, messages, tools, use_tools, external_api_data, user_input)
 
 if __name__ == "__main__":
     run()

@@ -25,7 +25,7 @@ Context, decisions, and conventions so Cursor (and humans) can work on this proj
 
 - **products.json:** Required by `app.py` but may not be in repo; if missing, catalog lookups fail. Create or restore it when testing.
 - **Ollama must be running:** App talks to local Ollama; connection errors usually mean Ollama is not running or model not pulled.
-- **Tool dispatch:** New tools must be added in three places: tool list in `run()`, `response.message.tool_calls` handling, and the actual function.
+- **Tool dispatch:** Inventory tools are static in `run()`. External API tools are **dynamic**: one tool per row in `api_operations` (built in `external_api.build_dynamic_tools_from_operations`). Tool-call handler dispatches by name: if name is in `operations_by_id` it runs the API; otherwise runs an inventory function.
 - **Low stock:** Status is "LOW STOCK ALERT" when `quantity < min_stock_level`, else "OK".
 
 ---

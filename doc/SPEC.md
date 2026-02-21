@@ -59,7 +59,7 @@ The LLM is given these tools; **all data reads must go through them** (no direct
 | `get_recent_transactions` | IN/OUT history for one product | `product_name` (string) |
 | `calculate_inventory_value` | Total $ value of all stock | — |
 | `find_products_by_brand` | All products for a brand | `brand_name` (string) |
-| `call_external_api` (optional) | Call external REST API by operation_id; returns raw response body | `operation_id`, `path_params`, `query_params`, `request_body` — loaded from Postgres when `DATABASE_URL`, `API_SOURCE_NAME`, and Bearer token are set |
+| *Dynamic external API tools* (optional) | One tool per DB operation (e.g. `Settings_GetAirports`, `Airports_GetPassengers`); each calls the external REST API and returns raw response body | Params per operation from `parameters_schema` (path/query/body) — loaded from Postgres when `DATABASE_URL`, `API_SOURCE_NAME`, and Bearer token are set |
 
 **Matching:** Product/brand matching is **fuzzy, case-insensitive** (substring in name/brand). **External API:** Operations come from `api_operations` (filled by `scripts/sync_swagger_to_db.py`); see `doc/requirements/external-api-tool-requirements.md`.
 

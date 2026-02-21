@@ -184,53 +184,93 @@ def resolve_operation_with_ollama(user_message, operations_list, model="function
         return None
 
 
-def build_external_api_tool(operations_list):
-    """
-    Build the single generic tool definition for Ollama, with operation list in the description.
-    """
-    lines = [
-        "Call the external API. Choose operation_id from the list below and provide path_params, query_params, and request_body as needed.",
-        "",
-        "Available operations (operation_id: METHOD path — summary):",
-    ]
-    for op in operations_list[:200]:  # cap so description is not huge
-        lines.append(
-            f"  - {op['operation_id']}: {op['method']} {op['path_template']} — {op['summary'][:80]}"
-        )
-    if len(operations_list) > 200:
-        lines.append(f"  ... and {len(operations_list) - 200} more.")
+def _operation_params_schema_list(op):
+    """Return list of param dicts (name, in, required, schema) from operation. Handles JSONB from DB."""
+    raw = op.get("parameters_schema")
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [p for p in raw if isinstance(p, dict) and p.get("name")]
+    return []
 
-    description = "\n".join(lines)
 
-    return {
-        "type": "function",
-        "function": {
-            "name": "call_external_api",
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "operation_id": {
-                        "type": "string",
-                        "description": "Operation ID from the list above (e.g. Auth_Login, Airports_GetPassengers)",
-                    },
-                    "path_params": {
-                        "type": "object",
-                        "description": "Path parameters: keys match placeholders in path (e.g. airportId, id)",
-                    },
-                    "query_params": {
-                        "type": "object",
-                        "description": "Query string parameters",
-                    },
-                    "request_body": {
-                        "type": "object",
-                        "description": "JSON body for POST/PUT/PATCH; omit for GET/DELETE",
-                    },
-                },
-                "required": ["operation_id"],
+def _tool_parameters_from_operation(op):
+    """Build Ollama tool parameters (properties + required) from operation's parameters_schema."""
+    params_list = _operation_params_schema_list(op)
+    properties = {}
+    required = []
+    for p in params_list:
+        loc = (p.get("in") or "query").lower()
+        if loc not in ("path", "query"):
+            continue
+        name = p.get("name")
+        if not name:
+            continue
+        schema = p.get("schema") or {}
+        prop_type = schema.get("type") or "string"
+        properties[name] = {
+            "type": prop_type,
+            "description": f"{loc} parameter",
+        }
+        if p.get("required"):
+            required.append(name)
+    method = (op.get("method") or "").upper()
+    if method in ("POST", "PUT", "PATCH"):
+        properties["request_body"] = {
+            "type": "object",
+            "description": "JSON body for the request (optional)",
+        }
+    return {"type": "object", "properties": properties, "required": required}
+
+
+def build_dynamic_tools_from_operations(operations_list):
+    """
+    Build one tool per DB operation. Each tool has name=operation_id and parameters from parameters_schema.
+    Returns list of tool dicts for Ollama (type/function/name/description/parameters).
+    """
+    tools = []
+    for op in operations_list:
+        oid = op.get("operation_id")
+        if not oid:
+            continue
+        summary = (op.get("summary") or "").strip() or "External API call"
+        method = (op.get("method") or "").upper()
+        path = (op.get("path_template") or "").strip()
+        description = f"{summary} — {method} {path}"
+        if len(description) > 300:
+            description = description[:297] + "..."
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": oid,
+                "description": description,
+                "parameters": _tool_parameters_from_operation(op),
             },
-        },
-    }
+        })
+    return tools
+
+
+def args_to_request_parts(operation, args):
+    """
+    Split flat tool-call args into path_params, query_params, request_body using operation's parameters_schema.
+    Returns (path_params, query_params, request_body).
+    """
+    if not isinstance(args, dict):
+        args = {}
+    params_list = _operation_params_schema_list(operation)
+    path_params = {}
+    query_params = {}
+    for p in params_list:
+        loc = (p.get("in") or "query").lower()
+        name = p.get("name")
+        if name not in args:
+            continue
+        if loc == "path":
+            path_params[name] = args[name]
+        elif loc == "query":
+            query_params[name] = args[name]
+    request_body = args.get("request_body") if args.get("request_body") is not None else args.get("body")
+    return path_params, query_params, request_body
 
 
 def _fill_path_template(template, path_params):
