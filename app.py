@@ -3,8 +3,10 @@ import env_loader
 env_loader.load_project_env(__file__)
 
 import ollama
+from ollama import ResponseError
 import json
 import os
+import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -255,6 +257,8 @@ def run():
         {'type': 'function', 'function': {'name': 'find_products_by_brand', 'description': 'Search for all products by a brand name', 'parameters': {'type': 'object', 'properties': {'brand_name': {'type': 'string'}}, 'required': ['brand_name']}}}
     ]
 
+    ollama_model = os.environ.get("OLLAMA_MODEL", "functiongemma")
+
     dynamic_external_tools, external_api_data = _load_external_api_tool()
     # Combined list: static inventory tools + dynamic tools (one per DB operation)
     tools = inventory_tools + (dynamic_external_tools if external_api_data else [])
@@ -335,7 +339,7 @@ def run():
                 messages.append({'role': 'tool', 'content': result})
 
             _log("  ... getting answer ...")
-            response = ollama.chat(model='functiongemma', messages=messages)
+            response = ollama.chat(model=ollama_model, messages=messages)
 
     # Keep conversation history so the model can use previous tool results (e.g. airport ID from list of airports)
     conversation_messages = []
@@ -354,7 +358,16 @@ def run():
             use_tools = _filter_external_tools_by_query(external_only, user_input, op_ids)
         else:
             use_tools = tools
-        response = ollama.chat(model='functiongemma', messages=messages, tools=use_tools)
+        try:
+            response = ollama.chat(model=ollama_model, messages=messages, tools=use_tools)
+        except ResponseError as e:
+            err_text = (getattr(e, "error", None) or str(e)) or ""
+            if "does not support tools" in err_text.lower() or (e.status_code == 400 and "tools" in err_text.lower()):
+                _log(f"Error: The model '{ollama_model}' does not support tool calling.")
+                print("This app needs a model that supports tools (e.g. functiongemma).")
+                print("Set OLLAMA_MODEL=functiongemma in your .env file, then run again.")
+                sys.exit(1)
+            raise
         _handle_tool_response(response, messages, tools, use_tools, external_api_data, user_input)
         # Persist this turn (user + assistant/tool messages) so next turn has full context
         conversation_messages = messages[1:]

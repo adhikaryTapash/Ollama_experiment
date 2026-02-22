@@ -154,11 +154,13 @@ def resolve_operation_with_openai(user_message, operations_list, api_key):
         return None
 
 
-def resolve_operation_with_ollama(user_message, operations_list, model="functiongemma"):
+def resolve_operation_with_ollama(user_message, operations_list, model=None):
     """
     Ask Ollama (e.g. functiongemma) which API operation to call and with what parameters.
     No API key needed. Returns dict with operation_id, path_params, query_params, request_body, or None on failure.
     """
+    if model is None:
+        model = os.environ.get("OLLAMA_MODEL", "functiongemma")
     try:
         import ollama
     except ImportError:
