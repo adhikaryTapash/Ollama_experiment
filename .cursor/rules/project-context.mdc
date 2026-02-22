@@ -1,0 +1,26 @@
+---
+description: Project context and doc pointers for Ollama_experiment
+alwaysApply: true
+---
+
+# Ollama_experiment – Project context
+
+This repo is the **Advanced Inventory Assistant**: a CLI that uses **Ollama** (model configurable via `OLLAMA_MODEL` in `.env`, default `functiongemma`; **Phi-3** is also available but does not support tools), **local JSON files** for inventory data, and optionally **Postgres** for the external API tool (Swagger-derived operations).
+
+## Doc folder (`doc/`)
+
+- **doc/SPEC.md** — Specification: data models (products, stocks, transactions), tools, flows, file layout.
+- **doc/MEMORY.md** — Conventions, decisions, gotchas, where to change what.
+- **doc/RULES.md** — Rules for code, data, and docs.
+- **doc/requirements/external-api-tool-requirements.md** — External API tool: precomputed Swagger → Postgres, generic `call_external_api` tool, multi-tenant notes.
+
+When changing behavior, data shapes, or tools: read SPEC and MEMORY first; update them if you add tools or change conventions.
+
+## Key facts
+
+- Main app: `app.py` (chat loop + tool definitions + tool execution).
+- **Ollama model:** Set via `OLLAMA_MODEL` in `.env` (default `functiongemma`). Model must support tool calling; Phi-3 does not.
+- Inventory data: `products.json`, `stocks.json`, `transaction.json`; use `load_data()` in app.py (returns `[]` if file missing).
+- Product/brand matching: fuzzy, case-insensitive substring.
+- New inventory tools: add function, add to `tools` in `run()`, add branch in tool-call loop.
+- **External API tool (optional):** When `DATABASE_URL`, `API_SOURCE_NAME` (or `API_SOURCE_ID`), and `EXTERNAL_API_BEARER_TOKEN` are set, the app loads operations from Postgres (`external_api.py`) and adds `call_external_api`. Operations are filled by the writer script `scripts/sync_swagger_to_db.py`; schema in `db/001_api_sources_and_operations.sql`. One tenant per session (load one API source at a time).
