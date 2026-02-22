@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Ollama_experiment – Project context
 
-This repo is the **Advanced Inventory Assistant**: a CLI that uses **Ollama** (model `functiongemma`), **local JSON files** for inventory data, and optionally **Postgres** for the external API tool (Swagger-derived operations).
+This repo is the **Advanced Inventory Assistant**: a CLI that uses **Ollama** (model configurable via `OLLAMA_MODEL` in `.env`, default `functiongemma`; **Phi-3** is also available but does not support tools), **local JSON files** for inventory data, and optionally **Postgres** for the external API tool (Swagger-derived operations).
 
 ## Doc folder (`doc/`)
 
@@ -19,6 +19,7 @@ When changing behavior, data shapes, or tools: read SPEC and MEMORY first; updat
 ## Key facts
 
 - Main app: `app.py` (chat loop + tool definitions + tool execution).
+- **Ollama model:** Set via `OLLAMA_MODEL` in `.env` (default `functiongemma`). Model must support tool calling; Phi-3 does not.
 - Inventory data: `products.json`, `stocks.json`, `transaction.json`; use `load_data()` in app.py (returns `[]` if file missing).
 - Product/brand matching: fuzzy, case-insensitive substring.
 - New inventory tools: add function, add to `tools` in `run()`, add branch in tool-call loop.

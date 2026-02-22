@@ -11,6 +11,6 @@ alwaysApply: false
 - **Tool pattern in app.py:** Each tool = (1) function returning a string, (2) entry in `tools` in `run()`, (3) branch in the `response.message.tool_calls` loop that calls the function and appends the tool result to `messages`. Inventory tools use `load_data()`; external API uses `external_api.py` (load from DB at startup, execute via `execute_external_api()`).
 - **IDs:** `product_id` in stocks/transactions must match `products.json` `id`. Keep existing ID style (e.g. PROD-001, T-1001).
 - **Errors:** Return clear, user-facing messages when product or brand not found; do not expose raw exceptions.
-- **Model:** Ollama model is `functiongemma`; do not change without updating README and doc/SPEC.md.
+- **Model:** Ollama model is set via `OLLAMA_MODEL` in `.env` (default `functiongemma`). The model must support tool calling; **functiongemma** is recommended. **Phi-3** is available in the project but does not support tools—do not use for this app. When changing default or supported models, update README and doc/SPEC.md.
 - **conversations/** is only for saving conversation text (e.g. `save_conversation.py`); keep inventory logic in `app.py`.
 - **External API:** Swagger is not parsed in the app. Operations come from Postgres (precomputed by `scripts/sync_swagger_to_db.py`). App reads `api_sources` and `api_operations` at startup and builds one generic tool `call_external_api(operation_id, path_params, query_params, request_body)`. Do not log request/response bodies.

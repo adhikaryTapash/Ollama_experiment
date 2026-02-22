@@ -43,6 +43,11 @@ A CLI inventory assistant powered by **Ollama** and local LLM tool-calling. Quer
 | **Ollama** | [ollama.com](https://ollama.com) — installed and running locally |
 | **Ollama model** | A **tool-capable** model (e.g. `functiongemma`). The default is `functiongemma`; set `OLLAMA_MODEL` in `.env` to override. |
 
+**Ollama models in this project**
+
+- **functiongemma** — Recommended. Supports tool/function calling and is the default (`OLLAMA_MODEL=functiongemma`). Use this for the full assistant experience (inventory tools and optional external API).
+- **Phi-3** — Also available in the project. You can install it with `ollama pull phi3` (appears as `phi3:latest` in `ollama list`). Phi-3 does **not** support tool calling in Ollama, so this app will not run with it; if you set `OLLAMA_MODEL=phi3` or `phi3:latest`, the app will exit with a clear message. Use **functiongemma** for this assistant.
+
 > **Note:** Not all Ollama models support tool/function calling. Use a model that does (e.g. `functiongemma`); otherwise the app will report that the model does not support tools.
 
 ---
